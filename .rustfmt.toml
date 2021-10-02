@@ -1,0 +1,6 @@
+tab_spaces = 2
+
+# Unstable
+indent_style = "Visual"
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
