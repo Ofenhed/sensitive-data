@@ -2,7 +2,7 @@ use std::{
   alloc::Layout,
   marker::PhantomPinned,
   ops::{Deref, DerefMut},
-  sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+  sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering},
 };
 
 struct HolderInner<T> {
@@ -117,10 +117,12 @@ impl<T: Sized> SensitiveData<T> {
   #[inline(always)]
   fn zeroize<const BYTES_ZEROIZED: usize>(&mut self, offset: isize) {
     use std::ptr::write_volatile;
+
     unsafe {
       write_volatile((self.inner_ptr as *mut [u8; BYTES_ZEROIZED]).offset(offset),
                      [0u8; BYTES_ZEROIZED])
-    };
+    }
+    fence(Ordering::Release);
   }
 
   fn zeroize_inner(&mut self) {
