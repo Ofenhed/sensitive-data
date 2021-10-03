@@ -85,7 +85,7 @@ impl<T> DerefMut for DerefMutHolder<'_, T> {
 impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "unix")]
   #[inline(always)]
-  pub fn new_zeroed() -> Self {
+  fn new_holder() -> Self {
     use std::{alloc::alloc, mem::size_of};
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
     let object_size = size_of::<HolderInner<T>>();
@@ -105,11 +105,28 @@ impl<T: Sized> SensitiveData<T> {
       inner_ptr = allocated as *mut HolderInner<T>;
       libc::mlock(inner_ptr as *mut libc::c_void, block_size);
     }
-    let mut holder = SensitiveData { inner_size: object_size,
-                                     memory_layout,
-                                     inner_ptr,
-                                     deref_counter: AtomicUsize::new(0) };
+    SensitiveData { inner_size: object_size,
+                    memory_layout,
+                    inner_ptr,
+                    deref_counter: AtomicUsize::new(0) }
+  }
+
+  #[inline(always)]
+  pub unsafe fn new_zeroed() -> Self {
+    let mut holder = Self::new_holder();
     holder.zeroize_inner();
+    holder.make_inaccessible();
+    holder
+  }
+
+  #[inline(always)]
+  pub fn new(t: T) -> Self {
+    let holder = Self::new_holder();
+    unsafe {
+      std::ptr::write(holder.inner_ptr,
+                      HolderInner { value: t,
+                                    _marker: PhantomPinned })
+    }
     holder.make_inaccessible();
     holder
   }
@@ -221,13 +238,19 @@ mod tests {
 
   #[test]
   fn zeroized_when_created() {
-    let a: SensitiveData<SomeTestStruct> = SensitiveData::new_zeroed();
+    let a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed() };
     assert_eq!(a.borrow().a, 0);
   }
 
   #[test]
+  fn value_when_created() {
+    let a: SensitiveData<SomeTestStruct> = SensitiveData::new(SomeTestStruct { a: 5 });
+    assert_eq!(a.borrow().a, 5);
+  }
+
+  #[test]
   fn destructor_executed() {
-    let mut a: SensitiveData<WithDestructor> = SensitiveData::new_zeroed();
+    let mut a: SensitiveData<WithDestructor> = unsafe { SensitiveData::new_zeroed() };
     let mut destructor_executed = false;
     let ptr: &mut bool = &mut destructor_executed;
     println!("Real pointer {:p}", ptr);
@@ -241,13 +264,13 @@ mod tests {
   }
   #[test]
   fn multiple_readers() {
-    let a: SensitiveData<SomeTestStruct> = SensitiveData::new_zeroed();
+    let a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed() };
     let _b = a.borrow();
     let _c = a.borrow();
   }
   #[test]
   fn reader_then_writer_then_reader() {
-    let mut a: SensitiveData<SomeTestStruct> = SensitiveData::new_zeroed();
+    let mut a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed() };
     {
       let _b = a.borrow();
     }
