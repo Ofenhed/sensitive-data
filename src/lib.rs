@@ -1,8 +1,8 @@
 use std::{
   alloc::Layout,
-  cell::Cell,
   marker::PhantomPinned,
   ops::{Deref, DerefMut},
+  sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 struct HolderInner<T> {
@@ -14,11 +14,12 @@ pub struct SensitiveData<T> {
   inner_size: usize,
   memory_layout: Layout,
   inner_ptr: *mut HolderInner<T>,
-  derefs: Cell<usize>,
+  deref_counter: AtomicUsize,
 }
 
 pub struct DerefHolder<'holder, T> {
   holder: &'holder SensitiveData<T>,
+  changed_permissions: AtomicBool,
 }
 
 pub struct DerefMutHolder<'holder, T> {
@@ -33,13 +34,10 @@ impl<T> Drop for DerefMutHolder<'_, T> {
 
 impl<T> Drop for DerefHolder<'_, T> {
   fn drop(&mut self) {
-    let val_before = self.holder.derefs.get();
-    let new_value = val_before - 1;
-    if val_before != self.holder.derefs.replace(new_value) {
-      panic!("Failed race for DerefHolder");
-    }
-    if new_value == 0 {
-      self.holder.make_inaccessible();
+    if self.changed_permissions.load(Ordering::Acquire) {
+      if self.holder.deref_counter.fetch_sub(1, Ordering::AcqRel) == 1 {
+        self.holder.make_inaccessible();
+      }
     }
   }
 }
@@ -60,7 +58,11 @@ impl<T> Drop for SensitiveData<T> {
 impl<'deref_holder, T> Deref for DerefHolder<'_, T> {
   type Target = T;
   fn deref(&self) -> &Self::Target {
-    self.holder.make_readable();
+    if !self.changed_permissions.swap(true, Ordering::AcqRel) {
+      if self.holder.deref_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+        self.holder.make_readable();
+      }
+    }
     unsafe { &(*self.holder.inner_ptr).value }
   }
 }
@@ -106,7 +108,7 @@ impl<T: Sized> SensitiveData<T> {
     let mut holder = SensitiveData { inner_size: object_size,
                                      memory_layout,
                                      inner_ptr,
-                                     derefs: Cell::new(0) };
+                                     deref_counter: AtomicUsize::new(0) };
     holder.zeroize_inner();
     holder.make_inaccessible();
     holder
@@ -179,11 +181,8 @@ impl<T: Sized> SensitiveData<T> {
 
   #[inline(always)]
   pub fn borrow(&self) -> DerefHolder<T> {
-    let val_before = self.derefs.get();
-    if val_before != self.derefs.replace(val_before + 1) {
-      panic!("Failed race for DerefHolder");
-    }
-    DerefHolder { holder: self }
+    DerefHolder { holder: self,
+                  changed_permissions: AtomicBool::new(false) }
   }
 
   #[inline(always)]
