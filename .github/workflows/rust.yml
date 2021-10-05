@@ -32,7 +32,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
-    - name: Cache
+    - name: Linux Cache
       if: runner.os != 'Windows'
       uses: actions/cache@v2
       with:
@@ -41,7 +41,7 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - name: Cache
+    - name: Windows Cache
       if: runner.os == 'Windows'
       uses: actions/cache@v2
       with:
