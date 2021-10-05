@@ -1,4 +1,5 @@
-use std::{alloc::LayoutError, error, fmt, io::Error as IoError};
+pub use std::{alloc::LayoutError, io::Error as IoError};
+use std::{error, fmt};
 
 #[derive(Debug)]
 pub enum Error {
