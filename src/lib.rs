@@ -22,7 +22,6 @@ struct HolderInner<T> {
 }
 
 pub struct SensitiveData<T> {
-  inner_size: usize,
   memory_layout: Layout,
   inner_ptr: *mut HolderInner<T>,
   deref_counter: AtomicUsize,
@@ -146,16 +145,14 @@ impl<T: Sized> SensitiveData<T> {
   }
 
   fn new_holder() -> Result<Self, Error> {
-    use std::{alloc::alloc, mem::size_of};
-    let object_size = size_of::<HolderInner<T>>();
+    use std::alloc::alloc;
     let memory_layout = Self::layout()?;
     let inner_ptr;
     unsafe {
       let allocated = alloc(memory_layout);
       inner_ptr = allocated as *mut HolderInner<T>;
     }
-    let mut data = SensitiveData { inner_size: object_size,
-                                   memory_layout,
+    let mut data = SensitiveData { memory_layout,
                                    inner_ptr,
                                    deref_counter: AtomicUsize::new(0) };
     data.lock_memory()?;
@@ -184,11 +181,8 @@ impl<T: Sized> SensitiveData<T> {
 
   #[inline(always)]
   fn zeroize_inner(&mut self) {
-    use std::{ptr::write_volatile, mem::zeroed};
-    unsafe {
-      write_volatile(self.inner_ptr,
-                     zeroed())
-    }
+    use std::{mem::zeroed, ptr::write_volatile};
+    unsafe { write_volatile(self.inner_ptr, zeroed()) }
     fence(Ordering::Release);
   }
 
