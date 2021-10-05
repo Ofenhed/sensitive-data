@@ -113,9 +113,9 @@ fn page_size() -> usize {
 #[cfg(target_family = "windows")]
 #[inline(always)]
 fn page_size() -> usize {
-  let system_info;
+  let mut system_info = sysinfoapi::SYSTEM_INFO::default();
   unsafe { sysinfoapi::GetSystemInfo(&mut system_info as *mut _) };
-  system_info.dwPageSize
+  system_info.dwPageSize as usize
 }
 
 impl<T: Sized> SensitiveData<T> {
@@ -136,7 +136,9 @@ impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "windows")]
   #[inline(always)]
   fn lock_memory(&mut self) -> Result<(), std::io::Error> {
-    if unsafe { memoryapi::VirtualLock(self.inner_ptr as *mut c_void, self.memory_layout.size()) } {
+    if unsafe { memoryapi::VirtualLock(self.inner_ptr as *mut c_void, self.memory_layout.size()) }
+       != 0
+    {
       Ok(())
     } else {
       Err(std::io::Error::last_os_error())
@@ -227,13 +229,14 @@ impl<T: Sized> SensitiveData<T> {
 
   #[cfg(target_family = "windows")]
   fn make_inaccessible(&self) -> Result<(), err::IoError> {
+    use std::ptr::addr_of_mut;
     if unsafe {
-      let mut _oldProtect;
-      winapi::VirtualProtect(self.inner_ptr as *mut c_void,
-                             self.memory_layout.size(),
-                             winnt::PAGE_NOACCESS,
-                             &_oldProtect as *mut c_void)
-    } == 0
+      let mut _old_protect = 0;
+      memoryapi::VirtualProtect(self.inner_ptr as *mut c_void,
+                                self.memory_layout.size(),
+                                winnt::PAGE_NOACCESS,
+                                addr_of_mut!(_old_protect))
+    } != 0
     {
       Ok(())
     } else {
@@ -257,13 +260,14 @@ impl<T: Sized> SensitiveData<T> {
 
   #[cfg(target_family = "windows")]
   fn make_readable(&self) -> Result<(), err::IoError> {
+    use std::ptr::addr_of_mut;
     if unsafe {
-      let mut _oldProtect;
-      winapi::VirtualProtect(self.inner_ptr as *mut c_void,
-                             self.memory_layout.size(),
-                             winnt::PAGE_READONLY,
-                             &_oldProtect as *mut c_void)
-    } == 0
+      let mut _old_protect = 0;
+      memoryapi::VirtualProtect(self.inner_ptr as *mut c_void,
+                                self.memory_layout.size(),
+                                winnt::PAGE_READONLY,
+                                addr_of_mut!(_old_protect))
+    } != 0
     {
       Ok(())
     } else {
@@ -287,13 +291,14 @@ impl<T: Sized> SensitiveData<T> {
 
   #[cfg(target_family = "windows")]
   fn make_writable(&self) -> Result<(), err::IoError> {
+    use std::ptr::addr_of_mut;
     if unsafe {
-      let mut _oldProtect;
-      winapi::VirtualProtect(self.inner_ptr as *mut c_void,
-                             self.memory_layout.size(),
-                             winnt::PAGE_READWRITE,
-                             &_oldProtect as *mut c_void)
-    } == 0
+      let mut _old_protect = 0;
+      memoryapi::VirtualProtect(self.inner_ptr as *mut c_void,
+                                self.memory_layout.size(),
+                                winnt::PAGE_READWRITE,
+                                addr_of_mut!(_old_protect))
+    } != 0
     {
       Ok(())
     } else {
