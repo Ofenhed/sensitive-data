@@ -1,9 +1,12 @@
 use std::{
-  alloc::Layout,
+  alloc::{Layout, LayoutError},
   marker::PhantomPinned,
   ops::{Deref, DerefMut},
   sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering},
 };
+
+mod err;
+pub use err::Error;
 
 struct HolderInner<T> {
   value: T,
@@ -82,53 +85,64 @@ impl<T> DerefMut for DerefMutHolder<'_, T> {
   }
 }
 
+#[cfg(target_family = "unix")]
+#[inline(always)]
+fn page_size() -> usize {
+  (unsafe { libc::sysconf(libc::_SC_PAGESIZE) }) as usize
+}
+
 impl<T: Sized> SensitiveData<T> {
+  fn layout() -> Result<Layout, LayoutError> {
+    Ok(Layout::new::<T>().align_to(page_size())?.pad_to_align())
+  }
+
   #[cfg(target_family = "unix")]
   #[inline(always)]
-  fn new_holder() -> Self {
-    use std::{alloc::alloc, mem::size_of};
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-    let object_size = size_of::<HolderInner<T>>();
-    let block_size = object_size / page_size;
-    let block_size = if block_size < object_size {
-      block_size + page_size
+  fn lock_memory(&mut self) -> Result<(), std::io::Error> {
+    if unsafe {
+      libc::mlock(self.inner_ptr as *mut libc::c_void,
+                  self.memory_layout.size())
+    } == -1
+    {
+      Err(std::io::Error::last_os_error())
     } else {
-      block_size
-    };
-    let memory_layout =
-      Layout::from_size_align(block_size, page_size).unwrap_or_else(|_| {
-                                                      panic!("Invalid pagesize: {}", page_size)
-                                                    });
+      Ok(())
+    }
+  }
+
+  fn new_holder() -> Result<Self, Error> {
+    use std::{alloc::alloc, mem::size_of};
+    let object_size = size_of::<HolderInner<T>>();
+    let memory_layout = Self::layout()?;
     let inner_ptr;
     unsafe {
       let allocated = alloc(memory_layout);
       inner_ptr = allocated as *mut HolderInner<T>;
-      libc::mlock(inner_ptr as *mut libc::c_void, block_size);
     }
-    SensitiveData { inner_size: object_size,
-                    memory_layout,
-                    inner_ptr,
-                    deref_counter: AtomicUsize::new(0) }
+    let mut data = SensitiveData { inner_size: object_size,
+                                   memory_layout,
+                                   inner_ptr,
+                                   deref_counter: AtomicUsize::new(0) };
+    data.lock_memory()?;
+    Ok(data)
   }
 
-  #[inline(always)]
-  pub unsafe fn new_zeroed() -> Self {
-    let mut holder = Self::new_holder();
+  pub unsafe fn new_zeroed() -> Result<Self, Error> {
+    let mut holder = Self::new_holder()?;
     holder.zeroize_inner();
     holder.make_inaccessible();
-    holder
+    Ok(holder)
   }
 
-  #[inline(always)]
-  pub fn new(t: T) -> Self {
-    let holder = Self::new_holder();
+  pub fn new(t: T) -> Result<Self, Error> {
+    let holder = Self::new_holder()?;
     unsafe {
       std::ptr::write(holder.inner_ptr,
                       HolderInner { value: t,
                                     _marker: PhantomPinned })
     }
     holder.make_inaccessible();
-    holder
+    Ok(holder)
   }
 
   #[inline(always)]
@@ -238,19 +252,25 @@ mod tests {
 
   #[test]
   fn zeroized_when_created() {
-    let a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed() };
+    let a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed().unwrap() };
     assert_eq!(a.borrow().a, 0);
   }
 
   #[test]
+  fn pads_to_page() {
+    let a: SensitiveData<SomeTestStruct> = SensitiveData::new(SomeTestStruct { a: 0 }).unwrap();
+    assert_eq!(a.memory_layout.size(), a.memory_layout.align());
+  }
+
+  #[test]
   fn value_when_created() {
-    let a: SensitiveData<SomeTestStruct> = SensitiveData::new(SomeTestStruct { a: 5 });
+    let a: SensitiveData<SomeTestStruct> = SensitiveData::new(SomeTestStruct { a: 5 }).unwrap();
     assert_eq!(a.borrow().a, 5);
   }
 
   #[test]
   fn destructor_executed() {
-    let mut a: SensitiveData<WithDestructor> = unsafe { SensitiveData::new_zeroed() };
+    let mut a: SensitiveData<WithDestructor> = unsafe { SensitiveData::new_zeroed().unwrap() };
     let mut destructor_executed = false;
     let ptr: &mut bool = &mut destructor_executed;
     println!("Real pointer {:p}", ptr);
@@ -264,13 +284,13 @@ mod tests {
   }
   #[test]
   fn multiple_readers() {
-    let a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed() };
+    let a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed().unwrap() };
     let _b = a.borrow();
     let _c = a.borrow();
   }
   #[test]
   fn reader_then_writer_then_reader() {
-    let mut a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed() };
+    let mut a: SensitiveData<SomeTestStruct> = unsafe { SensitiveData::new_zeroed().unwrap() };
     {
       let _b = a.borrow();
     }
