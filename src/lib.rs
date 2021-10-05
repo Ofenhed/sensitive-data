@@ -5,6 +5,9 @@ use std::{
   sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering},
 };
 
+#[cfg(target_family = "windows")]
+use winapi::um::memoryapi;
+
 mod err;
 pub use err::Error;
 
@@ -31,7 +34,9 @@ pub struct DerefMutHolder<'holder, T> {
 
 impl<T> Drop for DerefMutHolder<'_, T> {
   fn drop(&mut self) {
-    self.holder.make_inaccessible();
+    self.holder
+        .make_inaccessible()
+        .expect("Could not make SensitiveData inaccessible");
   }
 }
 
@@ -39,7 +44,9 @@ impl<T> Drop for DerefHolder<'_, T> {
   fn drop(&mut self) {
     if self.changed_permissions.load(Ordering::Acquire) {
       if self.holder.deref_counter.fetch_sub(1, Ordering::AcqRel) == 1 {
-        self.holder.make_inaccessible();
+        self.holder
+            .make_inaccessible()
+            .expect("Could not make SensitiveData readable");
       }
     }
   }
@@ -47,7 +54,8 @@ impl<T> Drop for DerefHolder<'_, T> {
 
 impl<T> Drop for SensitiveData<T> {
   fn drop(&mut self) {
-    self.make_writable();
+    self.make_writable()
+        .expect("Could not make SensitiveData writable");
     unsafe {
       std::ptr::drop_in_place(self.inner_ptr);
     }
@@ -63,7 +71,9 @@ impl<'deref_holder, T> Deref for DerefHolder<'_, T> {
   fn deref(&self) -> &Self::Target {
     if !self.changed_permissions.swap(true, Ordering::AcqRel) {
       if self.holder.deref_counter.fetch_add(1, Ordering::AcqRel) == 0 {
-        self.holder.make_readable();
+        self.holder
+            .make_readable()
+            .expect("Could not make SensitiveData readable");
       }
     }
     unsafe { &(*self.holder.inner_ptr).value }
@@ -73,14 +83,18 @@ impl<'deref_holder, T> Deref for DerefHolder<'_, T> {
 impl<T> Deref for DerefMutHolder<'_, T> {
   type Target = T;
   fn deref(&self) -> &Self::Target {
-    self.holder.make_readable();
+    self.holder
+        .make_readable()
+        .expect("Could not make SensitiveData readable");
     unsafe { &(*self.holder.inner_ptr).value }
   }
 }
 
 impl<T> DerefMut for DerefMutHolder<'_, T> {
   fn deref_mut(&mut self) -> &mut Self::Target {
-    self.holder.make_writable();
+    self.holder
+        .make_writable()
+        .expect("Could not make SensitiveData writable");
     unsafe { &mut (*self.holder.inner_ptr).value }
   }
 }
@@ -102,11 +116,24 @@ impl<T: Sized> SensitiveData<T> {
     if unsafe {
       libc::mlock(self.inner_ptr as *mut libc::c_void,
                   self.memory_layout.size())
-    } == -1
+    } == 0
     {
-      Err(std::io::Error::last_os_error())
-    } else {
       Ok(())
+    } else {
+      Err(std::io::Error::last_os_error())
+    }
+  }
+
+  #[cfg(target_family = "windows")]
+  #[inline(always)]
+  fn lock_memory(&mut self) -> Result<(), std::io::Error> {
+    if unsafe {
+      memoryapi::VirtualLock(self.inner_ptr as *mut libc::c_void,
+                             self.memory_layout.size())
+    } {
+      Ok(())
+    } else {
+      Err(std::io::Error::last_os_error())
     }
   }
 
@@ -130,7 +157,8 @@ impl<T: Sized> SensitiveData<T> {
   pub unsafe fn new_zeroed() -> Result<Self, Error> {
     let mut holder = Self::new_holder()?;
     holder.zeroize_inner();
-    holder.make_inaccessible();
+    holder.make_inaccessible()
+          .expect("Could not make the new SensitiveData inaccessible");
     Ok(holder)
   }
 
@@ -141,7 +169,8 @@ impl<T: Sized> SensitiveData<T> {
                       HolderInner { value: t,
                                     _marker: PhantomPinned })
     }
-    holder.make_inaccessible();
+    holder.make_inaccessible()
+          .expect("Could not make the new SensitiveData inaccessible");
     Ok(holder)
   }
 
@@ -177,38 +206,44 @@ impl<T: Sized> SensitiveData<T> {
   }
 
   #[cfg(target_family = "unix")]
-  fn make_inaccessible(&self) {
+  fn make_inaccessible(&self) -> Result<(), err::IoError> {
     if unsafe {
       libc::mprotect(self.inner_ptr as *mut libc::c_void,
                      self.memory_layout.size(),
                      libc::PROT_NONE)
-    } != 0
+    } == 0
     {
-      panic!("Could not make memory inaccessible");
+      Ok(())
+    } else {
+      Err(err::IoError::last_os_error())
     }
   }
 
   #[cfg(target_family = "unix")]
-  fn make_readable(&self) {
+  fn make_readable(&self) -> Result<(), err::IoError> {
     if unsafe {
       libc::mprotect(self.inner_ptr as *mut libc::c_void,
                      self.memory_layout.size(),
                      libc::PROT_READ)
-    } != 0
+    } == 0
     {
-      panic!("Could not make memory read only");
+      Ok(())
+    } else {
+      Err(err::IoError::last_os_error())
     }
   }
 
   #[cfg(target_family = "unix")]
-  fn make_writable(&mut self) {
+  fn make_writable(&mut self) -> Result<(), err::IoError> {
     if unsafe {
       libc::mprotect(self.inner_ptr as *mut libc::c_void,
                      self.memory_layout.size(),
                      libc::PROT_READ | libc::PROT_WRITE)
-    } != 0
+    } == 0
     {
-      panic!("Could not make memory inaccessible");
+      Ok(())
+    } else {
+      Err(err::IoError::last_os_error())
     }
   }
 
