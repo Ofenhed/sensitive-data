@@ -5,8 +5,13 @@ use std::{
   sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering},
 };
 
+#[cfg(target_family = "unix")]
+use libc::c_void;
 #[cfg(target_family = "windows")]
-use winapi::um::memoryapi;
+use winapi::{
+  ctypes::c_void,
+  um::{memoryapi, sysinfoapi, winnt},
+};
 
 mod err;
 pub use err::Error;
@@ -105,6 +110,14 @@ fn page_size() -> usize {
   (unsafe { libc::sysconf(libc::_SC_PAGESIZE) }) as usize
 }
 
+#[cfg(target_family = "windows")]
+#[inline(always)]
+fn page_size() -> usize {
+  let system_info;
+  unsafe { sysinfoapi::GetSystemInfo(&mut system_info as *mut _) };
+  system_info.dwPageSize
+}
+
 impl<T: Sized> SensitiveData<T> {
   fn layout() -> Result<Layout, LayoutError> {
     Ok(Layout::new::<T>().align_to(page_size())?.pad_to_align())
@@ -113,11 +126,7 @@ impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "unix")]
   #[inline(always)]
   fn lock_memory(&mut self) -> Result<(), std::io::Error> {
-    if unsafe {
-      libc::mlock(self.inner_ptr as *mut libc::c_void,
-                  self.memory_layout.size())
-    } == 0
-    {
+    if unsafe { libc::mlock(self.inner_ptr as *mut c_void, self.memory_layout.size()) } == 0 {
       Ok(())
     } else {
       Err(std::io::Error::last_os_error())
@@ -127,10 +136,7 @@ impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "windows")]
   #[inline(always)]
   fn lock_memory(&mut self) -> Result<(), std::io::Error> {
-    if unsafe {
-      memoryapi::VirtualLock(self.inner_ptr as *mut libc::c_void,
-                             self.memory_layout.size())
-    } {
+    if unsafe { memoryapi::VirtualLock(self.inner_ptr as *mut c_void, self.memory_layout.size()) } {
       Ok(())
     } else {
       Err(std::io::Error::last_os_error())
@@ -208,9 +214,25 @@ impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "unix")]
   fn make_inaccessible(&self) -> Result<(), err::IoError> {
     if unsafe {
-      libc::mprotect(self.inner_ptr as *mut libc::c_void,
+      libc::mprotect(self.inner_ptr as *mut c_void,
                      self.memory_layout.size(),
                      libc::PROT_NONE)
+    } == 0
+    {
+      Ok(())
+    } else {
+      Err(err::IoError::last_os_error())
+    }
+  }
+
+  #[cfg(target_family = "windows")]
+  fn make_inaccessible(&self) -> Result<(), err::IoError> {
+    if unsafe {
+      let mut _oldProtect;
+      winapi::VirtualProtect(self.inner_ptr as *mut c_void,
+                             self.memory_layout.size(),
+                             winnt::PAGE_NOACCESS,
+                             &_oldProtect as *mut c_void)
     } == 0
     {
       Ok(())
@@ -222,9 +244,25 @@ impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "unix")]
   fn make_readable(&self) -> Result<(), err::IoError> {
     if unsafe {
-      libc::mprotect(self.inner_ptr as *mut libc::c_void,
+      libc::mprotect(self.inner_ptr as *mut c_void,
                      self.memory_layout.size(),
                      libc::PROT_READ)
+    } == 0
+    {
+      Ok(())
+    } else {
+      Err(err::IoError::last_os_error())
+    }
+  }
+
+  #[cfg(target_family = "windows")]
+  fn make_readable(&self) -> Result<(), err::IoError> {
+    if unsafe {
+      let mut _oldProtect;
+      winapi::VirtualProtect(self.inner_ptr as *mut c_void,
+                             self.memory_layout.size(),
+                             winnt::PAGE_READONLY,
+                             &_oldProtect as *mut c_void)
     } == 0
     {
       Ok(())
@@ -236,9 +274,25 @@ impl<T: Sized> SensitiveData<T> {
   #[cfg(target_family = "unix")]
   fn make_writable(&mut self) -> Result<(), err::IoError> {
     if unsafe {
-      libc::mprotect(self.inner_ptr as *mut libc::c_void,
+      libc::mprotect(self.inner_ptr as *mut c_void,
                      self.memory_layout.size(),
                      libc::PROT_READ | libc::PROT_WRITE)
+    } == 0
+    {
+      Ok(())
+    } else {
+      Err(err::IoError::last_os_error())
+    }
+  }
+
+  #[cfg(target_family = "windows")]
+  fn make_writable(&self) -> Result<(), err::IoError> {
+    if unsafe {
+      let mut _oldProtect;
+      winapi::VirtualProtect(self.inner_ptr as *mut c_void,
+                             self.memory_layout.size(),
+                             winnt::PAGE_READWRITE,
+                             &_oldProtect as *mut c_void)
     } == 0
     {
       Ok(())
