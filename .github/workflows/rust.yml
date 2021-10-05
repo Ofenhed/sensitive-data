@@ -33,7 +33,7 @@ jobs:
         toolchain: stable
     - name: Build
       uses: actions-rs/cargo@v1
-      run: build --verbose
+      command: build --verbose
     - name: Run tests
       uses: actions-rs/cargo@v1
-      run: test --verbose
+      command: test --verbose
