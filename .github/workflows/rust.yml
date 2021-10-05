@@ -32,8 +32,8 @@ jobs:
       with:
         toolchain: stable
     - name: Build
-      use: actions-rs/cargo@v1
+      uses: actions-rs/cargo@v1
       run: build --verbose
     - name: Run tests
-      use: actions-rs/cargo@v1
+      uses: actions-rs/cargo@v1
       run: test --verbose
