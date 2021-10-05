@@ -10,5 +10,5 @@ repository = "https://github.com/Ofenhed/sensitive-data/"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
