@@ -183,34 +183,13 @@ impl<T: Sized> SensitiveData<T> {
   }
 
   #[inline(always)]
-  fn zeroize<const BYTES_ZEROIZED: usize>(&mut self, offset: isize) {
-    use std::ptr::write_volatile;
-
+  fn zeroize_inner(&mut self) {
+    use std::{ptr::write_volatile, mem::zeroed};
     unsafe {
-      write_volatile((self.inner_ptr as *mut [u8; BYTES_ZEROIZED]).offset(offset),
-                     [0u8; BYTES_ZEROIZED])
+      write_volatile(self.inner_ptr,
+                     zeroed())
     }
     fence(Ordering::Release);
-  }
-
-  fn zeroize_inner(&mut self) {
-    let mut offset = 0;
-    let inner_size = self.inner_size as isize;
-    while offset < inner_size {
-      if inner_size - offset >= 4096 {
-        self.zeroize::<4096>(offset);
-        offset += 4096;
-      } else if inner_size - offset >= 512 {
-        self.zeroize::<512>(offset);
-        offset += 512;
-      } else if inner_size - offset >= 8 {
-        self.zeroize::<8>(offset);
-        offset += 8;
-      } else {
-        self.zeroize::<1>(offset);
-        offset += 1;
-      }
-    }
   }
 
   #[cfg(target_family = "unix")]
