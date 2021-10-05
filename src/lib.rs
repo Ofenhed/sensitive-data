@@ -46,12 +46,12 @@ impl<T> Drop for DerefMutHolder<'_, T> {
 
 impl<T> Drop for DerefHolder<'_, T> {
   fn drop(&mut self) {
-    if self.changed_permissions.load(Ordering::Acquire) {
-      if self.holder.deref_counter.fetch_sub(1, Ordering::AcqRel) == 1 {
-        self.holder
-            .make_inaccessible()
-            .expect("Could not make SensitiveData readable");
-      }
+    if self.changed_permissions.load(Ordering::Acquire)
+       && self.holder.deref_counter.fetch_sub(1, Ordering::AcqRel) == 1
+    {
+      self.holder
+          .make_inaccessible()
+          .expect("Could not make SensitiveData readable");
     }
   }
 }
@@ -73,12 +73,12 @@ impl<T> Drop for SensitiveData<T> {
 impl<'deref_holder, T> Deref for DerefHolder<'_, T> {
   type Target = T;
   fn deref(&self) -> &Self::Target {
-    if !self.changed_permissions.swap(true, Ordering::AcqRel) {
-      if self.holder.deref_counter.fetch_add(1, Ordering::AcqRel) == 0 {
-        self.holder
-            .make_readable()
-            .expect("Could not make SensitiveData readable");
-      }
+    if !self.changed_permissions.swap(true, Ordering::AcqRel)
+       && self.holder.deref_counter.fetch_add(1, Ordering::AcqRel) == 0
+    {
+      self.holder
+          .make_readable()
+          .expect("Could not make SensitiveData readable");
     }
     unsafe { &(*self.holder.inner_ptr).value }
   }
@@ -159,6 +159,8 @@ impl<T: Sized> SensitiveData<T> {
     Ok(data)
   }
 
+  /// # Safety
+  /// This is not guaranteed to produce a valid object
   pub unsafe fn new_zeroed() -> Result<Self, Error> {
     let mut holder = Self::new_holder()?;
     holder.zeroize_inner();
